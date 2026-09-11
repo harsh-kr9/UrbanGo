@@ -1,19 +1,25 @@
 import React from 'react';
-import { X, Activity, AlertOctagon, ShieldCheck, BrainCircuit } from 'lucide-react';
+import { X, Activity, AlertOctagon, ShieldCheck, BrainCircuit, Waves, Zap, MapPin } from 'lucide-react';
 import type { DrainageNode, DrainagePipe } from '../types';
 
 interface NodeInspectorModalProps {
   selectedNode: DrainageNode | null;
   selectedPipe: DrainagePipe | null;
   onClose: () => void;
+  onTogglePumpRate?: (nodeId: string, rateLps: number) => void;
 }
 
 export const NodeInspectorModal: React.FC<NodeInspectorModalProps> = ({
   selectedNode,
   selectedPipe,
-  onClose
+  onClose,
+  onTogglePumpRate
 }) => {
   if (!selectedNode && !selectedPipe) return null;
+
+  const activeRateLps = selectedNode?.activePumpRateLps || 0;
+  const isPumpActive = activeRateLps > 0;
+  const evacuatedM3 = selectedNode?.totalDepumpedM3 || 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-md">
@@ -30,7 +36,7 @@ export const NodeInspectorModal: React.FC<NodeInspectorModalProps> = ({
                 {selectedNode ? selectedNode.name : `Drainage Pipe Edge #${selectedPipe?.id}`}
               </h3>
               <p className="text-xs text-slate-400">
-                {selectedNode ? `Ward: ${selectedNode.ward} | Type: ${selectedNode.type}` : `Pipe Geometry Polyline | Manning n = ${selectedPipe?.manningN}`}
+                {selectedNode ? `Ward: ${selectedNode.ward} | Type: ${selectedNode.type.toUpperCase()}` : `Pipe Geometry Polyline | Manning n = ${selectedPipe?.manningN}`}
               </p>
             </div>
           </div>
@@ -45,7 +51,7 @@ export const NodeInspectorModal: React.FC<NodeInspectorModalProps> = ({
 
         {/* Telemetry Body */}
         {selectedNode && (
-          <div className="mt-4 flex flex-col gap-4">
+          <div className="mt-4 flex flex-col gap-4 max-h-[75vh] overflow-y-auto pr-1">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               
               <div className="rounded-xl bg-slate-900/90 p-3 border border-slate-800">
@@ -97,55 +103,130 @@ export const NodeInspectorModal: React.FC<NodeInspectorModalProps> = ({
               </span>
             </div>
 
-            {/* PS085 Requirement: Explainable Prediction Breakdown */}
-            <div className="rounded-xl bg-slate-950/90 p-4 border border-slate-800 flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
-                  <BrainCircuit className="h-4 w-4 text-cyan-400" /> SIH PS085 Explainable Prediction Breakdown
-                </span>
-                <span className="px-2 py-0.5 rounded bg-cyan-950 text-[10px] font-extrabold text-cyan-400 border border-cyan-800">
-                  95.4% AI Confidence
+            {/* FEATURE 1: MUNICIPAL DE-WATERING PUMP TELEMETRY & DISPATCHER */}
+            <div className="rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950/40 p-4 border border-cyan-900/50 flex flex-col gap-3 shadow-lg">
+              <div className="flex items-center justify-between border-b border-cyan-900/40 pb-2">
+                <div className="flex items-center gap-2 text-cyan-300 font-bold text-xs">
+                  <Waves className="h-4 w-4 text-cyan-400 animate-pulse" />
+                  <span>MUNICIPAL DE-WATERING PUMP TELEMETRY & DISPATCHER</span>
+                </div>
+                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                  isPumpActive ? 'bg-emerald-500 text-slate-950 animate-pulse' : 'bg-slate-800 text-slate-400'
+                }`}>
+                  {isPumpActive ? `ACTIVE (${activeRateLps} L/s)` : 'PUMP IDLE'}
                 </span>
               </div>
 
-              <div className="flex flex-col gap-2 text-xs">
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>🌧️ Doppler Rainfall Intensity Impact:</span>
+              <p className="text-[11px] text-slate-400">
+                Deploy high-capacity mobile de-watering pumps to evacuate water from surcharging manhole <span className="text-cyan-300 font-bold">{selectedNode.id}</span> ({selectedNode.ward}).
+              </p>
+
+              {/* Pump Rate Dispatch Selector */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                  <Zap className="h-3.5 w-3.5 text-amber-400" /> Specify Telemetry De-Pumping Capacity:
+                </label>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {[0, 250, 500, 1000, 2000].map((rate) => (
+                    <button
+                      key={rate}
+                      onClick={() => onTogglePumpRate && onTogglePumpRate(selectedNode.id, rate)}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all border ${
+                        activeRateLps === rate
+                          ? 'bg-cyan-500 text-slate-950 border-cyan-400 shadow-md shadow-cyan-500/20'
+                          : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800 hover:border-slate-600'
+                      }`}
+                    >
+                      {rate === 0 ? 'OFF' : `${rate} L/s`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Telemetry Metrics */}
+              {isPumpActive && (
+                <div className="grid grid-cols-3 gap-2 mt-1 p-2.5 rounded-lg bg-cyan-950/60 border border-cyan-800/60 text-xs">
+                  <div>
+                    <span className="text-[10px] text-slate-400 block">De-Pumping Flow</span>
+                    <span className="font-bold text-cyan-300">{(activeRateLps / 1000).toFixed(2)} m³/s</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 block">Total Evacuated</span>
+                    <span className="font-bold text-emerald-300">{evacuatedM3.toLocaleString()} m³</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 block">Telemetry Node</span>
+                    <span className="font-bold text-slate-200 flex items-center gap-0.5">
+                      <MapPin className="h-3 w-3 text-cyan-400 inline" /> {selectedNode.id}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* FEATURE 3: VISUAL XAI EXPLAINABLE AI BREAKDOWN GAUGE */}
+            <div className="rounded-xl bg-slate-950/90 p-4 border border-slate-800 flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                  <BrainCircuit className="h-4 w-4 text-cyan-400" /> SIH PS085 Visual XAI Explainable AI Breakdown
+                </span>
+                <span className="px-2 py-0.5 rounded bg-cyan-950 text-[10px] font-extrabold text-cyan-400 border border-cyan-800">
+                  100% Decision Transparency
+                </span>
+              </div>
+
+              {/* Multi-Segment Stacked Visual Bar */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex justify-between text-[11px] text-slate-400">
+                  <span>Visual Multi-Factor Attribution Stack</span>
+                  <span className="text-slate-300 font-bold">100% Total Driver</span>
+                </div>
+                <div className="h-3.5 w-full bg-slate-900 rounded-full overflow-hidden flex p-0.5 gap-0.5 border border-slate-800">
+                  <div className="h-full bg-cyan-400 rounded-l transition-all duration-500" style={{ width: '42%' }} title="Rainfall 42%" />
+                  <div className="h-full bg-amber-400 transition-all duration-500" style={{ width: '26%' }} title="DEM Dip 26%" />
+                  <div className="h-full bg-rose-500 transition-all duration-500" style={{ width: '20%' }} title="Pipe Overload 20%" />
+                  <div className="h-full bg-purple-400 rounded-r transition-all duration-500" style={{ width: '12%' }} title="Imperviousness 12%" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                <div className="p-2 rounded-lg bg-slate-900/80 border border-slate-800">
+                  <div className="flex justify-between text-slate-400 text-[11px]">
+                    <span>🌧️ Doppler Rainfall</span>
                     <span className="font-bold text-cyan-300">42%</span>
                   </div>
-                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                  <div className="mt-1 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                     <div className="h-full bg-cyan-400" style={{ width: '42%' }} />
                   </div>
                 </div>
 
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>⛰️ Micro-DEM Elevation Dip Impact:</span>
+                <div className="p-2 rounded-lg bg-slate-900/80 border border-slate-800">
+                  <div className="flex justify-between text-slate-400 text-[11px]">
+                    <span>⛰️ DEM Elevation Dip</span>
                     <span className="font-bold text-amber-300">26%</span>
                   </div>
-                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                  <div className="mt-1 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                     <div className="h-full bg-amber-400" style={{ width: '26%' }} />
                   </div>
                 </div>
 
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>🚰 Underground Drain Overload Surcharge:</span>
+                <div className="p-2 rounded-lg bg-slate-900/80 border border-slate-800">
+                  <div className="flex justify-between text-slate-400 text-[11px]">
+                    <span>🚰 Pipe Surcharge</span>
                     <span className="font-bold text-rose-400">20%</span>
                   </div>
-                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                  <div className="mt-1 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                     <div className="h-full bg-rose-500" style={{ width: '20%' }} />
                   </div>
                 </div>
 
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>🏙️ Concrete Urban Imperviousness:</span>
-                    <span className="font-bold text-indigo-300">12%</span>
+                <div className="p-2 rounded-lg bg-slate-900/80 border border-slate-800">
+                  <div className="flex justify-between text-slate-400 text-[11px]">
+                    <span>🏙️ Concrete Runoff</span>
+                    <span className="font-bold text-purple-300">12%</span>
                   </div>
-                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-400" style={{ width: '12%' }} />
+                  <div className="mt-1 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-purple-400" style={{ width: '12%' }} />
                   </div>
                 </div>
               </div>

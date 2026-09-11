@@ -99,12 +99,29 @@ export function App() {
     selectedBlockedPipes: [],
     tidalLevelMeters: 1.5,
     urbanImperviousnessFactor: 0.85,
-    leadTimeMinutes: 0
+    leadTimeMinutes: 0,
+    deployedPumps: {}
   });
 
   // Selected Node / Pipe Inspector State
   const [selectedNode, setSelectedNode] = useState<DrainageNode | null>(null);
   const [selectedPipe, setSelectedPipe] = useState<DrainagePipe | null>(null);
+
+  // Feature 1: De-Watering Pump Telemetry Dispatcher Handler
+  const handleTogglePumpRate = (nodeId: string, rateLps: number) => {
+    setScenarioParams(prev => {
+      const currentPumps = { ...(prev.deployedPumps || {}) };
+      if (rateLps === 0) {
+        delete currentPumps[nodeId];
+      } else {
+        currentPumps[nodeId] = rateLps;
+      }
+      return {
+        ...prev,
+        deployedPumps: currentPumps
+      };
+    });
+  };
 
   // Emergency Routing State
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
@@ -497,12 +514,13 @@ export function App() {
 
       {/* Node / Pipe Telemetry Inspector Modal */}
       <NodeInspectorModal
-        selectedNode={selectedNode}
+        selectedNode={selectedNode ? hydroResult.updatedNodes.find(n => n.id === selectedNode.id) || selectedNode : null}
         selectedPipe={selectedPipe}
         onClose={() => {
           setSelectedNode(null);
           setSelectedPipe(null);
         }}
+        onTogglePumpRate={handleTogglePumpRate}
       />
 
     </div>

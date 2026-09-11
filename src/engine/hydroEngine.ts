@@ -10,6 +10,9 @@ export interface HydroSimulationResult {
   surchargedNodeCount: number;
   systemCapacityStressPercent: number;
   averageAiConfidenceScorePct: number;
+  totalDepumpingRateLps: number;
+  totalEvacuatedWaterM3: number;
+  activePumpCount: number;
 }
 
 /**
@@ -118,16 +121,35 @@ export function runHydrodynamicSimulation(
     totalPipeFill += pipe.fillRatio;
   });
 
-  // Step 3: Solve Manhole Node Surcharge & Surface Backflow Overflow
+  // Step 3: Solve Manhole Node Surcharge & Surface Backflow Overflow (With Municipal De-Watering Telemetry)
   let surchargedCount = 0;
+  let totalDepumpingRateLps = 0;
+  let totalEvacuatedWaterM3 = 0;
+  let activePumpCount = 0;
 
   nodes.forEach(node => {
     const inflow = nodeInflows[node.id] || 0;
     const outgoingPipes = pipes.filter(p => p.sourceNodeId === node.id);
     const totalOutflowCapacity = outgoingPipes.reduce((acc, p) => acc + (p.maxHydraulicCapacity * (1 - p.blockageRatio)), 0);
 
-    if (inflow > totalOutflowCapacity && totalOutflowCapacity > 0) {
-      const excessM3s = inflow - totalOutflowCapacity;
+    // Process Municipal De-Watering Pump Telemetry
+    const pumpRateLps = params.deployedPumps?.[node.id] || 0;
+    const pumpDeWateringM3s = pumpRateLps / 1000;
+
+    node.activePumpRateLps = pumpRateLps;
+    node.pumpStatus = pumpRateLps > 0 ? 'active' : 'idle';
+    node.totalDepumpedM3 = Math.round(pumpDeWateringM3s * 3600 * Math.max(0.5, timeHours + 0.5));
+
+    if (pumpRateLps > 0) {
+      activePumpCount++;
+      totalDepumpingRateLps += pumpRateLps;
+      totalEvacuatedWaterM3 += node.totalDepumpedM3;
+    }
+
+    const netInflow = Math.max(0, inflow - pumpDeWateringM3s);
+
+    if (netInflow > totalOutflowCapacity && totalOutflowCapacity > 0) {
+      const excessM3s = netInflow - totalOutflowCapacity;
       node.overflowVolume = excessM3s;
       node.currentSurchargeHead = Math.min(2.8, excessM3s * 0.38);
       node.status = node.currentSurchargeHead > 0.8 ? 'surcharging' : 'stressed';
@@ -135,7 +157,7 @@ export function runHydrodynamicSimulation(
     } else {
       node.overflowVolume = 0;
       node.currentSurchargeHead = 0;
-      node.status = inflow > (totalOutflowCapacity * 0.7) ? 'stressed' : 'normal';
+      node.status = netInflow > (totalOutflowCapacity * 0.7) ? 'stressed' : 'normal';
     }
   });
 
@@ -215,6 +237,9 @@ export function runHydrodynamicSimulation(
     maxWaterDepthCm: maxDepthCm,
     surchargedNodeCount: surchargedCount,
     systemCapacityStressPercent: stressPercent,
-    averageAiConfidenceScorePct: avgConfidence
+    averageAiConfidenceScorePct: avgConfidence,
+    totalDepumpingRateLps: totalDepumpingRateLps,
+    totalEvacuatedWaterM3: totalEvacuatedWaterM3,
+    activePumpCount: activePumpCount
   };
 }

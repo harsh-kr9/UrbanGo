@@ -39,6 +39,9 @@ export interface DrainageNode {
   overflowVolume: number; // overflow onto surface (m3/s)
   status: 'normal' | 'stressed' | 'surcharging' | 'flooded';
   ward: string;
+  activePumpRateLps?: number; // Active de-watering pump rate (L/s)
+  totalDepumpedM3?: number; // Cumulative evacuated water volume (m3)
+  pumpStatus?: 'active' | 'idle'; // Telemetry status of de-watering unit
 }
 
 // 1D Drainage Graph Edge (Stormwater Pipes, Box Culverts, Canals)
@@ -109,6 +112,7 @@ export interface ScenarioParams {
   tidalLevelMeters: number; // outfall sea/river tide level (e.g. 0.5m to 4.2m)
   urbanImperviousnessFactor: number; // 0.5 to 1.0
   leadTimeMinutes: number; // forecast slider offset 0 to 180 min
+  deployedPumps?: Record<string, number>; // Mapping nodeId -> de-watering pump rate (L/s)
 }
 
 // Emergency & Public Transit Vehicles / Modes for Flood Routing
