@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Compass, ShieldAlert, CheckCircle, Footprints, Train, Bus, Ambulance, Car, ArrowRight, MapPin, CloudRain, Zap, Loader2, Search, Settings } from 'lucide-react';
+import { Compass, ShieldAlert, CheckCircle, Footprints, Train, Bus, Ambulance, Car, ArrowRight, MapPin, CloudRain, Zap, Loader2, Search, Settings, Trash2 } from 'lucide-react';
 import type { CityInfo, RouteRequest, RouteResult, StreetSegment, TransitMode, UserLocationState } from '../types';
 import { calculateFloodSafeRouteAsync, TRANSIT_PROFILES } from '../engine/routingEngine';
 import { searchLocations, type RealTimeWeatherData } from '../services/weatherApi';
@@ -9,7 +9,8 @@ interface EmergencyRoutingPanelProps {
   streets: StreetSegment[];
   liveWeather?: RealTimeWeatherData | null;
   userLocationState?: UserLocationState;
-  onRouteCalculated: (result: RouteResult) => void;
+  onRouteCalculated: (result: RouteResult | null) => void;
+  onClearRoute?: () => void;
 }
 
 export const EmergencyRoutingPanel: React.FC<EmergencyRoutingPanelProps> = ({
@@ -17,7 +18,8 @@ export const EmergencyRoutingPanel: React.FC<EmergencyRoutingPanelProps> = ({
   streets,
   liveWeather,
   userLocationState,
-  onRouteCalculated
+  onRouteCalculated,
+  onClearRoute
 }) => {
   const landmarks = city.landmarks || [];
 
@@ -121,6 +123,12 @@ export const EmergencyRoutingPanel: React.FC<EmergencyRoutingPanelProps> = ({
       case 'car': return <Car className="h-5 w-5 text-emerald-400" />;
       case 'custom': return <Settings className="h-5 w-5 text-amber-400" />;
     }
+  };
+
+  const handleClearRouteFromMap = () => {
+    setActiveRouteResult(null);
+    onRouteCalculated(null);
+    if (onClearRoute) onClearRoute();
   };
 
   return (
@@ -398,23 +406,37 @@ export const EmergencyRoutingPanel: React.FC<EmergencyRoutingPanelProps> = ({
           <span>Automatically bypass submerged streets exceeding clearance threshold</span>
         </label>
 
-        <button
-          onClick={handleComputeRoute}
-          disabled={isCalculating}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-bold text-xs hover:opacity-90 transition-opacity shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
-        >
-          {isCalculating ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin text-slate-950" />
-              <span>Fetching OSRM Real Driving Route...</span>
-            </>
-          ) : (
-            <>
-              <Compass className="h-4 w-4" />
-              <span>Compute Safest Multi-Modal Route</span>
-            </>
+        <div className="flex items-center gap-2">
+          {activeRouteResult && (
+            <button
+              type="button"
+              onClick={handleClearRouteFromMap}
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-rose-950/80 border border-rose-800 text-rose-300 hover:bg-rose-900 text-xs font-bold transition-all shadow-md cursor-pointer"
+              title="Remove route path line and travel time from GIS map"
+            >
+              <Trash2 className="h-4 w-4 text-rose-400" />
+              <span>Clear Route from Map</span>
+            </button>
           )}
-        </button>
+
+          <button
+            onClick={handleComputeRoute}
+            disabled={isCalculating}
+            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-bold text-xs hover:opacity-90 transition-opacity shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
+          >
+            {isCalculating ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin text-slate-950" />
+                <span>Fetching OSRM Real Driving Route...</span>
+              </>
+            ) : (
+              <>
+                <Compass className="h-4 w-4" />
+                <span>Compute Safest Multi-Modal Route</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Route Result Comparison & Guidance */}

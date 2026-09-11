@@ -1,5 +1,5 @@
-import React from 'react';
-import { Activity, AlertTriangle, CloudRain, Code2, Compass, Home, Layers, ShieldAlert, Sparkles, BrainCircuit, Navigation, History, CheckCircle2, AlertCircle, Sun, Moon, Lock } from 'lucide-react';
+import React, { useState } from 'react';
+import { Activity, AlertTriangle, CloudRain, Code2, Compass, Home, Layers, ShieldAlert, Navigation, History, CheckCircle2, AlertCircle, Sun, Moon, Lock, ChevronDown } from 'lucide-react';
 import type { CityId, DataMode, HistoricalEvent, UserLocationState } from '../types';
 import { CITIES } from '../data/metroDatasets';
 import type { RealTimeWeatherData } from '../services/weatherApi';
@@ -13,7 +13,7 @@ interface HeaderProps {
   maxWaterDepthCm: number;
   surchargedNodeCount: number;
   rainfallRateMmHr: number | null;
-  onApplyPresetScenario: (scenarioType: string) => void;
+  onApplyPresetScenario?: (scenarioType: string) => void;
   onReturnToHome?: () => void;
   dataMode: DataMode;
   onToggleDataMode: (mode: DataMode) => void;
@@ -37,7 +37,6 @@ export const Header: React.FC<HeaderProps> = ({
   maxWaterDepthCm,
   surchargedNodeCount,
   rainfallRateMmHr,
-  onApplyPresetScenario,
   onReturnToHome,
   dataMode,
   onToggleDataMode,
@@ -51,7 +50,7 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleTheme,
   isMunicipalOfficial = false
 }) => {
-  const activeEvent = historicalEvents.find(e => e.id === selectedHistoricalEventId) || historicalEvents[0];
+  const [isTelemetryOpen, setIsTelemetryOpen] = useState<boolean>(false);
   const isLiveMode = dataMode === 'live';
   const isLiveAvailable = isLiveMode && (liveWeather?.isLiveApiData ?? false);
 
@@ -193,96 +192,83 @@ export const Header: React.FC<HeaderProps> = ({
                 )}
               </button>
             )}
+
+            {/* Collapsible Live Telemetry & Metrics Dropdown Toggle */}
+            <button
+              onClick={() => setIsTelemetryOpen(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                isTelemetryOpen
+                  ? 'bg-cyan-950 text-cyan-300 border-cyan-500/50 shadow-md shadow-cyan-500/20'
+                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
+              }`}
+              title="Show or hide Live Telemetry & Metrics Dropdown"
+            >
+              <Activity className="h-3.5 w-3.5 text-cyan-400" />
+              <span>Live Status & Metrics</span>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${isTelemetryOpen ? 'rotate-180 text-cyan-400' : 'text-slate-400'}`} />
+            </button>
+
           </div>
         </div>
 
-        {/* Live Telemetry Banner & Data Source Information */}
-        <div className="flex flex-wrap items-center gap-3 bg-slate-950/70 rounded-xl p-2 border border-slate-800 text-xs">
-          
-          {/* System Data Status Badge */}
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
-            {isLiveAvailable ? (
-              <span className="flex items-center gap-1 text-emerald-400 font-extrabold text-[11px]">
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                <span>🟢 LIVE</span>
-              </span>
-            ) : !isLiveMode ? (
-              <span className="flex items-center gap-1 text-blue-400 font-extrabold text-[11px]">
-                <History className="h-3.5 w-3.5 text-blue-400" />
-                <span>🔵 HISTORICAL REPLAY</span>
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-amber-400 font-extrabold text-[11px]">
-                <AlertCircle className="h-3.5 w-3.5 text-amber-400" />
-                <span>⚠️ DATA UNAVAILABLE</span>
-              </span>
-            )}
-          </div>
-
-          {/* Rainfall Value & Source */}
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
-            <CloudRain className="h-4 w-4 text-cyan-400" />
-            <span className="text-slate-400">Rainfall:</span>
-            <span className="font-bold text-cyan-300">
-              {rainfallRateMmHr !== null ? `${rainfallRateMmHr} mm/h` : 'Data unavailable'}
-            </span>
-          </div>
-
-          {/* Data Source Label */}
-          <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-900/80 border border-slate-800 text-[11px] text-slate-300">
-            <span className="text-slate-400">Source:</span>
-            <span className="font-mono text-cyan-300">
-              {isLiveMode ? (liveWeather?.sourceName || 'Open-Meteo API') : activeEvent.source}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
-            <AlertTriangle className={`h-4 w-4 ${surchargedNodeCount > 0 ? 'text-rose-500 animate-pulse' : 'text-amber-400'}`} />
-            <span className="text-slate-400">Surcharged Drains:</span>
-            <span className={`font-bold ${surchargedNodeCount > 0 ? 'text-rose-400' : 'text-slate-200'}`}>
-              {surchargedNodeCount} Nodes
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
-            <ShieldAlert className="h-4 w-4 text-amber-400" />
-            <span className="text-slate-400">Flooded Roads:</span>
-            <span className="font-bold text-amber-300">{totalFloodedKm} km</span>
-          </div>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
-            <Activity className="h-4 w-4 text-rose-400" />
-            <span className="text-slate-400">Max Depth:</span>
-            <span className="font-bold text-rose-400">{maxWaterDepthCm} cm</span>
-          </div>
-
-          {!isLiveMode && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800" title="Prototype Model Score (Simulated)">
-              <BrainCircuit className="h-4 w-4 text-cyan-400" />
-              <span className="text-slate-400">Prototype Model Score:</span>
-              <span className="font-bold text-cyan-300">95.6%</span>
-              <span className="text-[9px] text-slate-500 font-mono">(SIMULATED)</span>
+        {/* Collapsible Live Status Dropdown Panel */}
+        {isTelemetryOpen && (
+          <div className="flex flex-wrap items-center gap-3 bg-slate-950/90 rounded-xl p-2.5 border border-cyan-900/40 text-xs shadow-xl animate-in fade-in zoom-in-95 duration-150">
+            
+            {/* System Data Status Badge */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+              {isLiveAvailable ? (
+                <span className="flex items-center gap-1 text-emerald-400 font-extrabold text-[11px]">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>🟢 LIVE</span>
+                </span>
+              ) : !isLiveMode ? (
+                <span className="flex items-center gap-1 text-blue-400 font-extrabold text-[11px]">
+                  <History className="h-3.5 w-3.5 text-blue-400" />
+                  <span>🔵 HISTORICAL REPLAY</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-amber-400 font-extrabold text-[11px]">
+                  <AlertCircle className="h-3.5 w-3.5 text-amber-400" />
+                  <span>⚠️ DATA UNAVAILABLE</span>
+                </span>
+              )}
             </div>
-          )}
 
-          {/* Quick Scenario Preset Triggers */}
-          <div className="hidden xl:flex items-center gap-1.5 ml-2 border-l border-slate-800 pl-3">
-            <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-            <span className="text-[11px] text-slate-400 font-medium">Quick Crisis:</span>
-            <button
-              onClick={() => onApplyPresetScenario('cloudburst')}
-              className="px-2 py-0.5 rounded bg-rose-950/60 border border-rose-800/80 text-[11px] text-rose-300 hover:bg-rose-900"
-            >
-              Cloudburst Peak
-            </button>
-            <button
-              onClick={() => onApplyPresetScenario('tide_lock')}
-              className="px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/80 text-[11px] text-cyan-300 hover:bg-cyan-900"
-            >
-              High Tide Lock
-            </button>
+            {/* Rainfall Value */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+              <CloudRain className="h-4 w-4 text-cyan-400" />
+              <span className="text-slate-400">Rainfall:</span>
+              <span className="font-bold text-cyan-300">
+                {rainfallRateMmHr !== null ? `${rainfallRateMmHr} mm/h` : '0 mm/h'}
+              </span>
+            </div>
+
+            {/* Surcharged Drains */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+              <AlertTriangle className={`h-4 w-4 ${surchargedNodeCount > 0 ? 'text-rose-500 animate-pulse' : 'text-amber-400'}`} />
+              <span className="text-slate-400">Surcharged Drains:</span>
+              <span className={`font-bold ${surchargedNodeCount > 0 ? 'text-rose-400' : 'text-slate-200'}`}>
+                {surchargedNodeCount} Nodes
+              </span>
+            </div>
+
+            {/* Flooded Roads */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+              <ShieldAlert className="h-4 w-4 text-amber-400" />
+              <span className="text-slate-400">Flooded Roads:</span>
+              <span className="font-bold text-amber-300">{totalFloodedKm} km</span>
+            </div>
+
+            {/* Max Depth */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+              <Activity className="h-4 w-4 text-rose-400" />
+              <span className="text-slate-400">Max Depth:</span>
+              <span className="font-bold text-rose-400">{maxWaterDepthCm} cm</span>
+            </div>
+
           </div>
-        </div>
+        )}
 
         {/* View Navigation Tabs */}
         <nav className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">

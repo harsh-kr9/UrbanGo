@@ -447,7 +447,10 @@ export function App() {
             userLocationState={userLocationState}
             onRouteCalculated={(res) => {
               setRouteResult(res);
-              setActiveTab('driving');
+              if (res) setActiveTab('driving');
+            }}
+            onClearRoute={() => {
+              setRouteResult(null);
             }}
           />
         )}
