@@ -1,4 +1,4 @@
-import type { RouteRequest, RouteResult, RouteSegmentGeometry, RouteStep, StreetSegment, VehicleProfile } from '../types';
+import type { RouteRequest, RouteResult, RouteStep, StreetSegment, VehicleProfile } from '../types';
 
 export const TRANSIT_PROFILES: VehicleProfile[] = [
   {
@@ -73,28 +73,33 @@ function getDistanceMeters(p1: [number, number], p2: [number, number]): number {
  * Dynamically traverses street segments avoiding flooded roads based on vehicle ground clearance
  */
 /**
- * Find highest flood depth along a polyline path
+ * Find highest flood depth along a polyline path (using 45m street proximity)
  */
 function evaluatePathWaterDepth(path: [number, number][], streets: StreetSegment[]): { maxDepthCm: number; floodedStreetsCount: number } {
   let maxDepthCm = 0;
   let floodedStreetsCount = 0;
+  const checkedStreetIds = new Set<string>();
 
   streets.forEach(street => {
-    if (street.currentWaterDepthCm > 0) {
+    if (street.currentWaterDepthCm > 0 && !checkedStreetIds.has(street.id)) {
       const streetCoords = street.coordinates;
       for (const pt of path) {
+        let isMatch = false;
         for (const sPt of streetCoords) {
           const dist = getDistanceMeters(pt, sPt);
-          if (dist < 400) {
+          if (dist < 45) { // 45-meter proximity threshold along real road corridor
+            isMatch = true;
             if (street.currentWaterDepthCm > maxDepthCm) {
               maxDepthCm = street.currentWaterDepthCm;
             }
             if (street.currentWaterDepthCm >= 15) {
               floodedStreetsCount++;
             }
+            checkedStreetIds.add(street.id);
             break;
           }
         }
+        if (isMatch) break;
       }
     }
   });
@@ -103,22 +108,24 @@ function evaluatePathWaterDepth(path: [number, number][], streets: StreetSegment
 }
 
 /**
- * Fetch real-world OSRM Driving Route between any Origin and Destination coordinates
+ * Fetch real-world OSRM Driving Routes (Primary + Alternatives) between Origin and Destination
  */
-async function fetchOsrmDrivingRoute(origin: [number, number], destination: [number, number]): Promise<{ path: [number, number][]; distanceKm: number; durationMin: number } | null> {
+async function fetchOsrmDrivingRoutesAll(
+  origin: [number, number],
+  destination: [number, number]
+): Promise<Array<{ path: [number, number][]; distanceKm: number; durationMin: number }> | null> {
   try {
     const url = `https://router.project-osrm.org/route/v1/driving/${origin[1]},${origin[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson&alternatives=true`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.routes || data.routes.length === 0) return null;
 
-    const primaryRoute = data.routes[0];
-    const coords: [number, number][] = primaryRoute.geometry.coordinates.map((pt: [number, number]) => [pt[1], pt[0]]);
-    const distanceKm = parseFloat((primaryRoute.distance / 1000).toFixed(2));
-    const durationMin = Math.max(1, Math.round(primaryRoute.duration / 60));
-
-    return { path: coords, distanceKm, durationMin };
+    return data.routes.map((r: any) => ({
+      path: r.geometry.coordinates.map((pt: [number, number]) => [pt[1], pt[0]]),
+      distanceKm: parseFloat((r.distance / 1000).toFixed(2)),
+      durationMin: Math.max(1, Math.round(r.duration / 60))
+    }));
   } catch (err) {
     console.warn('OSRM Route Fetch fallback:', err);
     return null;
@@ -126,7 +133,168 @@ async function fetchOsrmDrivingRoute(origin: [number, number], destination: [num
 }
 
 /**
- * Synchronous local Dijkstra & geometric pathfinder fallback
+ * Topological Street Graph Dijkstra Pathfinder (Offline / Fallback Solver)
+ * Traverses connected street segment polylines only; never draws random lines
+ */
+function solveStreetGraphDijkstra(
+  origin: [number, number],
+  destination: [number, number],
+  streets: StreetSegment[],
+  clearanceThreshold: number
+): { path: [number, number][]; distanceKm: number; maxDepthCm: number; isSafe: boolean; steps: RouteStep[] } {
+  interface NodeNeighbor {
+    nodeId: string;
+    street: StreetSegment;
+    cost: number;
+    coords: [number, number][];
+  }
+
+  const adjacency: Record<string, NodeNeighbor[]> = {};
+  const coordToNodeId = (pt: [number, number]) => `${pt[0].toFixed(4)},${pt[1].toFixed(4)}`;
+
+  streets.forEach(street => {
+    if (street.coordinates.length < 2) return;
+    const startPt = street.coordinates[0];
+    const endPt = street.coordinates[street.coordinates.length - 1];
+    const startId = coordToNodeId(startPt);
+    const endId = coordToNodeId(endPt);
+
+    const isFlooded = street.currentWaterDepthCm > clearanceThreshold;
+    const cost = isFlooded ? street.lengthMeters * 50 : street.lengthMeters;
+
+    if (!adjacency[startId]) adjacency[startId] = [];
+    if (!adjacency[endId]) adjacency[endId] = [];
+
+    adjacency[startId].push({ nodeId: endId, street, cost, coords: street.coordinates });
+    adjacency[endId].push({ nodeId: startId, street, cost, coords: [...street.coordinates].reverse() });
+  });
+
+  let startNodeId = '';
+  let endNodeId = '';
+  let minStartDist = Infinity;
+  let minEndDist = Infinity;
+
+  Object.keys(adjacency).forEach(nodeId => {
+    const parts = nodeId.split(',').map(Number);
+    const pt: [number, number] = [parts[0], parts[1]];
+    const dStart = getDistanceMeters(origin, pt);
+    const dEnd = getDistanceMeters(destination, pt);
+
+    if (dStart < minStartDist) {
+      minStartDist = dStart;
+      startNodeId = nodeId;
+    }
+    if (dEnd < minEndDist) {
+      minEndDist = dEnd;
+      endNodeId = nodeId;
+    }
+  });
+
+  if (!startNodeId || !endNodeId) {
+    const path: [number, number][] = [origin, destination];
+    const distKm = parseFloat((getDistanceMeters(origin, destination) / 1000).toFixed(2));
+    return { path, distanceKm: distKm, maxDepthCm: 0, isSafe: true, steps: [] };
+  }
+
+  interface PreviousStep {
+    nodeId: string;
+    edge: NodeNeighbor;
+  }
+
+  const distances: Record<string, number> = {};
+  const previous: Record<string, PreviousStep | null> = {};
+  const unvisited = new Set<string>();
+
+  Object.keys(adjacency).forEach(nodeId => {
+    distances[nodeId] = Infinity;
+    previous[nodeId] = null;
+    unvisited.add(nodeId);
+  });
+
+  distances[startNodeId] = 0;
+
+  while (unvisited.size > 0) {
+    let currentId: string | null = null;
+    let smallestDist = Infinity;
+    unvisited.forEach(nodeId => {
+      if (distances[nodeId] < smallestDist) {
+        smallestDist = distances[nodeId];
+        currentId = nodeId;
+      }
+    });
+
+    if (!currentId || smallestDist === Infinity || currentId === endNodeId) break;
+
+    unvisited.delete(currentId);
+
+    const neighbors = adjacency[currentId] || [];
+    for (const neighbor of neighbors) {
+      if (!unvisited.has(neighbor.nodeId)) continue;
+
+      const newDist = distances[currentId] + neighbor.cost;
+      if (newDist < distances[neighbor.nodeId]) {
+        distances[neighbor.nodeId] = newDist;
+        previous[neighbor.nodeId] = { nodeId: currentId, edge: neighbor };
+      }
+    }
+  }
+
+  const finalPath: [number, number][] = [origin];
+  const routeSteps: RouteStep[] = [];
+  let curr: string | null = endNodeId;
+  const pathEdges: NodeNeighbor[] = [];
+
+  while (curr && previous[curr]) {
+    const prevInfo: PreviousStep | null = previous[curr];
+    if (!prevInfo) break;
+    pathEdges.unshift(prevInfo.edge);
+    curr = prevInfo.nodeId;
+  }
+
+  let totalMeters = 0;
+  let maxDepth = 0;
+  let hasFloodedSegment = false;
+
+  if (pathEdges.length > 0) {
+    pathEdges.forEach(edge => {
+      edge.coords.forEach(pt => finalPath.push(pt));
+      totalMeters += edge.street.lengthMeters;
+      if (edge.street.currentWaterDepthCm > maxDepth) {
+        maxDepth = edge.street.currentWaterDepthCm;
+      }
+      if (edge.street.currentWaterDepthCm > clearanceThreshold) {
+        hasFloodedSegment = true;
+      }
+      routeSteps.push({
+        mode: 'drive',
+        streetName: edge.street.name,
+        distanceMeters: edge.street.lengthMeters,
+        waterDepthCm: edge.street.currentWaterDepthCm,
+        isFlooded: edge.street.currentWaterDepthCm > clearanceThreshold,
+        instruction: edge.street.currentWaterDepthCm > clearanceThreshold
+          ? `⚠️ Caution along ${edge.street.name}: ${edge.street.currentWaterDepthCm}cm flood depth.`
+          : `Proceed along ${edge.street.name} (${edge.street.lengthMeters}m).`
+      });
+    });
+  } else {
+    finalPath.push(destination);
+    totalMeters = getDistanceMeters(origin, destination);
+  }
+
+  finalPath.push(destination);
+  const distKm = parseFloat((totalMeters / 1000).toFixed(2));
+
+  return {
+    path: finalPath,
+    distanceKm: distKm,
+    maxDepthCm: maxDepth,
+    isSafe: !hasFloodedSegment,
+    steps: routeSteps
+  };
+}
+
+/**
+ * Synchronous local street graph Dijkstra pathfinder
  */
 export function calculateFloodSafeRoute(
   req: RouteRequest,
@@ -139,136 +307,10 @@ export function calculateFloodSafeRoute(
   const originName = req.originName || 'Selected Origin (Src)';
   const destinationName = req.destinationName || 'Selected Destination (Dest)';
 
-  const steps: RouteStep[] = [];
-  const segmentedPath: RouteSegmentGeometry[] = [];
-  const fullPath: [number, number][] = [];
+  const dijkstraRes = solveStreetGraphDijkstra(req.origin, req.destination, streets, clearanceThreshold);
 
-  // Metro Rail Mode
-  if (profile.isMultiModalMetro) {
-    let metroDistanceAcc = 0;
-    const walk1Dist = 350;
-    metroDistanceAcc += walk1Dist;
-
-    const walk1Path: [number, number][] = [
-      req.origin,
-      [(req.origin[0] * 2 + req.destination[0]) / 3, (req.origin[1] * 2 + req.destination[1]) / 3]
-    ];
-    walk1Path.forEach(c => fullPath.push(c));
-    segmentedPath.push({ mode: 'walk', path: walk1Path });
-
-    steps.push({
-      mode: 'walk',
-      streetName: `Walk to ${originName} Metro Skywalk`,
-      distanceMeters: walk1Dist,
-      waterDepthCm: 0,
-      isFlooded: false,
-      instruction: `🚶 Walk 350m via elevated skywalk towards Metro Rail Gate 1.`
-    });
-
-    const metroDist = Math.round(getDistanceMeters(req.origin, req.destination) * 0.9);
-    metroDistanceAcc += metroDist;
-    const metroPath: [number, number][] = [
-      [(req.origin[0] * 2 + req.destination[0]) / 3, (req.origin[1] * 2 + req.destination[1]) / 3],
-      [(req.origin[0] + req.destination[0] * 2) / 3, (req.origin[1] + req.destination[1] * 2) / 3]
-    ];
-    metroPath.forEach(c => fullPath.push(c));
-    segmentedPath.push({ mode: 'metro', path: metroPath });
-
-    steps.push({
-      mode: 'metro',
-      streetName: 'Rapid Metro Elevated Corridor',
-      distanceMeters: metroDist,
-      waterDepthCm: 0,
-      isFlooded: false,
-      instruction: `🚇 Board Metro Rail. Ride elevated above street flood zones.`
-    });
-
-    const walk2Dist = 240;
-    metroDistanceAcc += walk2Dist;
-    const walk2Path: [number, number][] = [
-      [(req.origin[0] + req.destination[0] * 2) / 3, (req.origin[1] + req.destination[1] * 2) / 3],
-      req.destination
-    ];
-    walk2Path.forEach(c => fullPath.push(c));
-    segmentedPath.push({ mode: 'walk', path: walk2Path });
-
-    steps.push({
-      mode: 'walk',
-      streetName: `Exit Station to ${destinationName}`,
-      distanceMeters: walk2Dist,
-      waterDepthCm: 0,
-      isFlooded: false,
-      instruction: `🚶 Exit Metro Station. Walk 240m to destination.`
-    });
-
-    const totalDistanceKm = parseFloat((metroDistanceAcc / 1000).toFixed(2));
-
-    return {
-      routeId: `R-METRO-01`,
-      vehicleType: profile.name,
-      transitMode: 'metro',
-      originName,
-      destinationName,
-      totalDistanceKm,
-      estimatedTimeMin: 12,
-      maxWaterDepthCm: 0,
-      isSafe: true,
-      hazardWarningsCount: 0,
-      path: fullPath,
-      segmentedPath,
-      steps
-    };
-  }
-
-  // Standard Driving / Walking Path
-  fullPath.push(req.origin);
-  let totalDistanceMeters = getDistanceMeters(req.origin, req.destination);
-  let maxDepthCm = 0;
-  let hazardsCount = 0;
-
-  streets.forEach((street) => {
-    street.coordinates.forEach(coord => fullPath.push(coord));
-    if (street.currentWaterDepthCm > maxDepthCm) {
-      maxDepthCm = street.currentWaterDepthCm;
-    }
-    if (street.currentWaterDepthCm > clearanceThreshold) {
-      hazardsCount++;
-    }
-  });
-
-  fullPath.push(req.destination);
-
-  segmentedPath.push({
-    mode: mode === 'walk' ? 'walk' : mode === 'bus' ? 'bus' : 'drive',
-    path: fullPath
-  });
-
-  const totalDistanceKm = parseFloat((totalDistanceMeters / 1000).toFixed(2));
-  const baseSpeedKmh = mode === 'walk' ? 4.5 : mode === 'bus' ? 22 : mode === 'ambulance' ? 45 : 32;
-  const estimatedTimeMin = Math.max(3, Math.round((totalDistanceKm / baseSpeedKmh) * 60 + hazardsCount * 4));
-
-  const isSafe = maxDepthCm <= clearanceThreshold;
-
-  steps.push({
-    mode: mode === 'walk' ? 'walk' : 'drive',
-    streetName: `Commute Corridor via ${originName} to ${destinationName}`,
-    distanceMeters: totalDistanceMeters,
-    waterDepthCm: maxDepthCm,
-    isFlooded: !isSafe,
-    instruction: isSafe
-      ? `🚗 Shortest route is CLEAR (Max depth ${maxDepthCm}cm). Travel time ${estimatedTimeMin} min.`
-      : `⚠️ FLOOD WARNING: Shortest path encounters ${maxDepthCm}cm water depth (Exceeds ${clearanceThreshold}cm clearance). Safe bypass active.`
-  });
-
-  let alternativeShortestSubmergedPath;
-  if (!isSafe) {
-    alternativeShortestSubmergedPath = {
-      totalDistanceKm: parseFloat((totalDistanceKm * 0.88).toFixed(2)),
-      estimatedTimeMin: Math.round(estimatedTimeMin * 1.8),
-      maxWaterDepthCm: maxDepthCm,
-      path: fullPath
-    };
-  }
+  const speedKmh = mode === 'walk' ? 4.5 : mode === 'bus' ? 22 : mode === 'ambulance' ? 45 : 32;
+  const estimatedTimeMin = Math.max(2, Math.round((dijkstraRes.distanceKm / speedKmh) * 60));
 
   return {
     routeId: `R-${mode.toUpperCase()}-01`,
@@ -276,15 +318,24 @@ export function calculateFloodSafeRoute(
     transitMode: mode,
     originName,
     destinationName,
-    totalDistanceKm,
+    totalDistanceKm: dijkstraRes.distanceKm,
     estimatedTimeMin,
-    maxWaterDepthCm: maxDepthCm,
-    isSafe,
-    hazardWarningsCount: hazardsCount,
-    path: fullPath,
-    segmentedPath,
-    steps,
-    alternativeShortestSubmergedPath
+    maxWaterDepthCm: dijkstraRes.maxDepthCm,
+    isSafe: dijkstraRes.isSafe,
+    hazardWarningsCount: dijkstraRes.isSafe ? 0 : 1,
+    path: dijkstraRes.path,
+    segmentedPath: [{
+      mode: mode === 'walk' ? 'walk' : 'drive',
+      path: dijkstraRes.path
+    }],
+    steps: dijkstraRes.steps.length > 0 ? dijkstraRes.steps : [{
+      mode: mode === 'walk' ? 'walk' : 'drive',
+      streetName: `${originName} to ${destinationName}`,
+      distanceMeters: Math.round(dijkstraRes.distanceKm * 1000),
+      waterDepthCm: dijkstraRes.maxDepthCm,
+      isFlooded: !dijkstraRes.isSafe,
+      instruction: `Route calculated along street network (${dijkstraRes.distanceKm} km).`
+    }]
   };
 }
 
@@ -308,43 +359,34 @@ export async function calculateFloodSafeRouteAsync(
     return calculateFloodSafeRoute(req, streets);
   }
 
-  // 1. Fetch real-world OSRM driving path
-  const osrmRes = await fetchOsrmDrivingRoute(req.origin, req.destination);
+  // 1. Fetch real-world OSRM driving candidate routes
+  const osrmCandidates = await fetchOsrmDrivingRoutesAll(req.origin, req.destination);
 
-  if (!osrmRes) {
+  if (!osrmCandidates || osrmCandidates.length === 0) {
     return calculateFloodSafeRoute(req, streets);
   }
 
-  const { path: shortestPath, distanceKm: shortestDistKm, durationMin: osrmDurationMin } = osrmRes;
-  const { maxDepthCm, floodedStreetsCount } = evaluatePathWaterDepth(shortestPath, streets);
+  const primaryRoute = osrmCandidates[0];
+  const { maxDepthCm: primaryMaxDepth, floodedStreetsCount: primaryFloodedCount } = evaluatePathWaterDepth(primaryRoute.path, streets);
 
-  // Speed multiplier for vehicle profile relative to standard car
   let modeMultiplier = 1.0;
-  if (mode === 'walk') modeMultiplier = 5.5; // ~4.5 km/h vs 25 km/h urban car
-  else if (mode === 'bus') modeMultiplier = 1.35; // City bus stops
-  else if (mode === 'ambulance') modeMultiplier = 0.85; // Sirens emergency clearance
+  if (mode === 'walk') modeMultiplier = 5.5;
+  else if (mode === 'bus') modeMultiplier = 1.35;
+  else if (mode === 'ambulance') modeMultiplier = 0.85;
 
-  // Base clear travel time using OSRM's real turn-by-turn road network duration
-  const baseShortestTimeMin = Math.max(1, Math.round(osrmDurationMin * modeMultiplier));
+  const baseShortestTimeMin = Math.max(1, Math.round(primaryRoute.durationMin * modeMultiplier));
+  const isPrimaryClear = primaryMaxDepth <= clearanceThreshold;
 
-  const isShortestPathClear = maxDepthCm <= clearanceThreshold;
-
-  const steps: RouteStep[] = [];
-  const segmentedPath: RouteSegmentGeometry[] = [{
-    mode: mode === 'walk' ? 'walk' : 'drive',
-    path: shortestPath
-  }];
-
-  // Case 1: Shortest Route is 100% Clear of Flooding!
-  if (isShortestPathClear) {
-    steps.push({
+  // Case 1: Primary route is 100% CLEAR of flood hazard
+  if (isPrimaryClear) {
+    const steps: RouteStep[] = [{
       mode: mode === 'walk' ? 'walk' : 'drive',
       streetName: `Direct Route: ${originName} ➔ ${destinationName}`,
-      distanceMeters: Math.round(shortestDistKm * 1000),
-      waterDepthCm: maxDepthCm,
+      distanceMeters: Math.round(primaryRoute.distanceKm * 1000),
+      waterDepthCm: primaryMaxDepth,
       isFlooded: false,
-      instruction: `🟢 Direct shortest route is 100% CLEAR (${maxDepthCm}cm max depth). Estimated travel time: ${baseShortestTimeMin} min.`
-    });
+      instruction: `🟢 Direct shortest route via road network is 100% CLEAR (${primaryMaxDepth}cm max depth). Estimated travel time: ${baseShortestTimeMin} min.`
+    }];
 
     return {
       routeId: `R-OSRM-CLEAR`,
@@ -352,49 +394,62 @@ export async function calculateFloodSafeRouteAsync(
       transitMode: mode,
       originName,
       destinationName,
-      totalDistanceKm: shortestDistKm,
+      totalDistanceKm: primaryRoute.distanceKm,
       estimatedTimeMin: baseShortestTimeMin,
-      maxWaterDepthCm: maxDepthCm,
+      maxWaterDepthCm: primaryMaxDepth,
       isSafe: true,
       hazardWarningsCount: 0,
-      path: shortestPath,
-      segmentedPath,
+      path: primaryRoute.path,
+      segmentedPath: [{
+        mode: mode === 'walk' ? 'walk' : 'drive',
+        path: primaryRoute.path
+      }],
       steps
     };
   }
 
-  // Case 2: Shortest Route HAS FLOODING!
-  // Compute Flood Relief Bypass Path by creating offset geometry avoiding flooded zone
-  const midLat = (req.origin[0] + req.destination[0]) / 2 + 0.012;
-  const midLng = (req.origin[1] + req.destination[1]) / 2 + 0.012;
-  const detourWaypoint: [number, number] = [midLat, midLng];
+  // Case 2: Primary route HAS FLOODING! Evaluate alternative OSRM candidate routes
+  let bestBypassRoute = primaryRoute;
+  let bestBypassMaxDepth = primaryMaxDepth;
+  let isBypassFound = false;
 
-  // Attempt bypass route via OSRM detour waypoint
-  const osrmBypass1 = await fetchOsrmDrivingRoute(req.origin, detourWaypoint);
-  const osrmBypass2 = await fetchOsrmDrivingRoute(detourWaypoint, req.destination);
-
-  let safeBypassPath: [number, number][] = shortestPath;
-  let safeBypassDistKm = parseFloat((shortestDistKm * 1.18).toFixed(2));
-  let safeBypassDurationMin = Math.max(2, Math.round(baseShortestTimeMin * 1.25));
-
-  if (osrmBypass1 && osrmBypass2) {
-    safeBypassPath = [...osrmBypass1.path, ...osrmBypass2.path];
-    safeBypassDistKm = parseFloat((osrmBypass1.distanceKm + osrmBypass2.distanceKm).toFixed(2));
-    safeBypassDurationMin = Math.max(2, Math.round((osrmBypass1.durationMin + osrmBypass2.durationMin) * modeMultiplier));
+  for (let i = 1; i < osrmCandidates.length; i++) {
+    const cand = osrmCandidates[i];
+    const { maxDepthCm: candMaxDepth } = evaluatePathWaterDepth(cand.path, streets);
+    if (candMaxDepth <= clearanceThreshold) {
+      bestBypassRoute = cand;
+      bestBypassMaxDepth = candMaxDepth;
+      isBypassFound = true;
+      break;
+    }
   }
 
-  // Calculate submerged shortest route duration including hydrodynamic wading & gridlock delays
-  const extraFloodPenaltyMin = Math.round(floodedStreetsCount * 4 + (maxDepthCm - profile.maxWaterDepthClearanceCm) * 0.4);
-  const shortestFloodedDurationMin = Math.round(baseShortestTimeMin * 1.8 + extraFloodPenaltyMin);
+  // If no alternative OSRM candidate route was clear, use Dijkstra graph solver
+  if (!isBypassFound) {
+    const graphResult = solveStreetGraphDijkstra(req.origin, req.destination, streets, clearanceThreshold);
+    if (graphResult.isSafe && graphResult.path.length > 2) {
+      bestBypassRoute = {
+        path: graphResult.path,
+        distanceKm: graphResult.distanceKm,
+        durationMin: Math.max(2, Math.round((graphResult.distanceKm / (mode === 'walk' ? 4.5 : 30)) * 60))
+      };
+      bestBypassMaxDepth = graphResult.maxDepthCm;
+      isBypassFound = true;
+    }
+  }
 
-  steps.push({
+  const safeDurationMin = Math.max(2, Math.round(bestBypassRoute.durationMin * modeMultiplier));
+  const extraFloodPenaltyMin = Math.round(primaryFloodedCount * 4 + (primaryMaxDepth - clearanceThreshold) * 0.4);
+  const floodedShortestDurationMin = Math.round(baseShortestTimeMin * 1.8 + extraFloodPenaltyMin);
+
+  const steps: RouteStep[] = [{
     mode: mode === 'walk' ? 'walk' : 'drive',
     streetName: `Flood Relief Bypass: ${originName} ➔ ${destinationName}`,
-    distanceMeters: Math.round(safeBypassDistKm * 1000),
-    waterDepthCm: 0,
+    distanceMeters: Math.round(bestBypassRoute.distanceKm * 1000),
+    waterDepthCm: bestBypassMaxDepth,
     isFlooded: false,
-    instruction: `🛡️ RECOMMENDED FLOOD RELIEF PATH: Rerouted via elevated bypass corridor avoiding ${maxDepthCm}cm flood zone.`
-  });
+    instruction: `🛡️ RECOMMENDED FLOOD RELIEF PATH: Rerouted along flood-free road corridor bypassing ${primaryMaxDepth}cm submerged zone.`
+  }];
 
   return {
     routeId: `R-OSRM-SAFE-BYPASS`,
@@ -402,22 +457,22 @@ export async function calculateFloodSafeRouteAsync(
     transitMode: mode,
     originName,
     destinationName,
-    totalDistanceKm: safeBypassDistKm,
-    estimatedTimeMin: safeBypassDurationMin,
-    maxWaterDepthCm: 0, // Safe route avoids flood
+    totalDistanceKm: bestBypassRoute.distanceKm,
+    estimatedTimeMin: safeDurationMin,
+    maxWaterDepthCm: bestBypassMaxDepth,
     isSafe: true,
-    hazardWarningsCount: floodedStreetsCount,
-    path: safeBypassPath, // Green safe route
+    hazardWarningsCount: primaryFloodedCount,
+    path: bestBypassRoute.path, // Green safe route along real roads
     segmentedPath: [{
       mode: mode === 'walk' ? 'walk' : 'drive',
-      path: safeBypassPath
+      path: bestBypassRoute.path
     }],
     steps,
     alternativeShortestSubmergedPath: {
-      totalDistanceKm: shortestDistKm,
-      estimatedTimeMin: shortestFloodedDurationMin,
-      maxWaterDepthCm: maxDepthCm,
-      path: shortestPath // Red flooded shortest route
+      totalDistanceKm: primaryRoute.distanceKm,
+      estimatedTimeMin: floodedShortestDurationMin,
+      maxWaterDepthCm: primaryMaxDepth,
+      path: primaryRoute.path // Red flooded shortest route along real roads
     }
   };
 }
